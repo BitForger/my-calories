@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSHealthShareUsageDescription</key>
+	<string>We read calorie intake from Health to keep your dashboard and weekly targets accurate.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>We write calorie entries to Health so your nutrition data stays in sync across apps.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
