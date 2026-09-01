@@ -20,6 +20,7 @@ struct ContentView: View {
     @Query private var profiles: [UserProfile]
 
     @State private var showingAddEntrySheet = false
+    @State private var showingQuickStartSheet = false
     @StateObject private var syncCoordinator = HealthKitSyncCoordinator()
     private let reminderManager = ReminderManager()
 
@@ -28,101 +29,59 @@ struct ContentView: View {
     @AppStorage("enableReminders") private var enableReminders = false
 
     var body: some View {
-        Group {
-            if hasCompletedQuickStart {
-                NavigationViewWrapper {
-                    List {
-                        Section("Today") {
-                            dailyCard
-                        }
+        TabView {
+            NavigationViewWrapper {
+                HomeDashboardView(
+                    entries: entries,
+                    profile: activeProfile,
+                    syncMessage: syncCoordinator.syncMessage,
+                    hasCompletedQuickStart: hasCompletedQuickStart,
+                    onOpenQuickStart: { showingQuickStartSheet = true }
+                )
+            }
+            .tabItem {
+                Label("Home", systemImage: "house")
+            }
 
-                        Section("Week") {
-                            weeklyCard
-                        }
+            NavigationViewWrapper {
+                LogEntriesView(
+                    entries: entries,
+                    onAddEntry: { showingAddEntrySheet = true },
+                    onDeleteEntries: deleteEntries
+                )
+            }
+            .tabItem {
+                Label("Log", systemImage: "list.bullet")
+            }
 
-                        Section("Consistency") {
-                            consistencyCard
-                        }
-
-                        Section("Targets") {
-                            targetModePicker
-                            metabolismCard
-                        }
-
-                        if !syncCoordinator.syncMessage.isEmpty {
-                            Section("Sync") {
-                                Text(syncCoordinator.syncMessage)
-                                    .font(.footnote)
-                            }
-                        }
-
-                        Section("Recent Entries") {
-                            if entries.isEmpty {
-                                Text("No entries yet. Tap + to add your first meal.")
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            ForEach(entries.prefix(20)) { entry in
-                                HStack {
-                                    VStack(alignment: .leading) {
-                                        Text(entry.foodName)
-                                        Text(entry.amountDescription)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    VStack(alignment: .trailing) {
-                                        Text("\(Int(entry.calories)) cal")
-                                        Text(entry.consumedAt, format: .dateTime.hour().minute())
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                            .onDelete(perform: deleteEntries)
-                        }
-                    }
-                    .toolbar {
-#if os(iOS)
-                        ToolbarItem(placement: .topBarTrailing) {
-                            EditButton()
-                        }
-#endif
-                        ToolbarItem {
-                            Button(action: { showingAddEntrySheet = true }) {
-                                Label("Add Entry", systemImage: "plus")
-                            }
-                        }
-                    }
-                    .sheet(isPresented: $showingAddEntrySheet) {
-                        AddFoodEntrySheet(foodCatalog: foodCatalog) { payload in
-                            addEntry(payload)
-                        }
-                    }
-                    .task {
-                        bootstrapIfNeeded()
-                        await refreshFromHealthKit()
-                    }
-                }
-            } else {
-                QuickStartOnboardingView(
+            NavigationViewWrapper {
+                SettingsView(
+                    profile: activeProfile,
+                    hasCompletedQuickStart: $hasCompletedQuickStart,
                     useCloudKitSync: $useCloudKitSync,
                     enableReminders: $enableReminders,
+                    onOpenQuickStart: { showingQuickStartSheet = true },
                     onRequestHealthKit: {
-                        await syncCoordinator.requestAuthorization()
-                    },
-                    onComplete: {
-                        hasCompletedQuickStart = true
+                        await authorizeAndSyncHealthKit()
                     }
                 )
-                .task {
-                    bootstrapIfNeeded()
-                }
+            }
+            .tabItem {
+                Label("Settings", systemImage: "gear")
             }
         }
-#if os(macOS)
-        .navigationSplitViewColumnWidth(min: 320, ideal: 360)
-#endif
+        .sheet(isPresented: $showingAddEntrySheet) {
+            AddFoodEntrySheet(foodCatalog: foodCatalog) { payload in
+                addEntry(payload)
+            }
+        }
+        .sheet(isPresented: $showingQuickStartSheet) {
+            quickStartSheet
+        }
+        .task {
+            bootstrapIfNeeded()
+            await refreshFromHealthKit()
+        }
         .onChange(of: enableReminders) { _, enabled in
             Task {
                 await updateReminderSchedule(enabled: enabled)
@@ -140,8 +99,171 @@ struct ContentView: View {
         return profile
     }
 
+    private var quickStartSheet: some View {
+        QuickStartOnboardingView(
+            useCloudKitSync: $useCloudKitSync,
+            enableReminders: $enableReminders,
+            onRequestHealthKit: {
+                await authorizeAndSyncHealthKit()
+            },
+            onComplete: {
+                hasCompletedQuickStart = true
+                showingQuickStartSheet = false
+            }
+        )
+    }
+
+    private func authorizeAndSyncHealthKit() async {
+        await syncCoordinator.requestAuthorization()
+        await refreshFromHealthKit()
+        await syncAllEntriesWithHealthKit()
+    }
+
+    private func addEntry(_ payload: AddFoodEntryPayload) {
+        withAnimation {
+            let entry = FoodEntry(
+                foodName: payload.foodName,
+                amountDescription: payload.amountDescription,
+                calories: payload.calories,
+                consumedAt: payload.consumedAt,
+                updatedAt: .now,
+                source: "manual"
+            )
+            modelContext.insert(entry)
+        }
+
+        Task {
+            await syncAllEntriesWithHealthKit()
+        }
+    }
+
+    private func deleteEntries(offsets: IndexSet) {
+        let removedEntries = offsets.map { entries[$0] }
+
+        withAnimation {
+            for index in offsets {
+                modelContext.delete(entries[index])
+            }
+        }
+
+        Task {
+            await syncCoordinator.deleteEntriesFromHealthKit(removedEntries.map(CalorieEntryPayload.init))
+            await syncAllEntriesWithHealthKit()
+        }
+    }
+
+    private func bootstrapIfNeeded() {
+        if profiles.isEmpty {
+            modelContext.insert(UserProfile())
+        }
+
+        if foodCatalog.isEmpty {
+            FoodCatalogSeed.defaults.forEach {
+                modelContext.insert(
+                    FoodCatalogItem(
+                        name: $0.name,
+                        defaultAmountDescription: $0.amount,
+                        caloriesPerDefaultAmount: $0.calories
+                    )
+                )
+            }
+        }
+
+        Task {
+            await updateReminderSchedule(enabled: enableReminders)
+        }
+    }
+
+    private func refreshFromHealthKit() async {
+        let startDate = Calendar.current.startOfDay(for: .now)
+        let payloads = await syncCoordinator.pullLatestEntries(from: startDate, to: .now)
+
+        guard !payloads.isEmpty else { return }
+
+        for payload in payloads {
+            if let match = entries.first(where: {
+                $0.healthKitSampleIdentifier == payload.healthKitSampleIdentifier || $0.id == payload.id
+            }) {
+                if payload.updatedAt >= match.updatedAt {
+                    match.foodName = payload.foodName
+                    match.amountDescription = payload.amountDescription
+                    match.calories = payload.calories
+                    match.consumedAt = payload.consumedAt
+                    match.updatedAt = payload.updatedAt
+                    match.healthKitSampleIdentifier = payload.healthKitSampleIdentifier
+                    match.source = "healthKit"
+                }
+            } else {
+                modelContext.insert(
+                    FoodEntry(
+                        id: payload.id,
+                        foodName: payload.foodName,
+                        amountDescription: payload.amountDescription,
+                        calories: payload.calories,
+                        consumedAt: payload.consumedAt,
+                        updatedAt: payload.updatedAt,
+                        source: "healthKit",
+                        healthKitSampleIdentifier: payload.healthKitSampleIdentifier
+                    )
+                )
+            }
+        }
+    }
+
+    private func syncAllEntriesWithHealthKit() async {
+        let snapshots = entries.map(CalorieEntryPayload.init)
+        let mergedPayloads = await syncCoordinator.sync(localEntries: snapshots)
+
+        for payload in mergedPayloads {
+            if let match = entries.first(where: { $0.id == payload.id || $0.healthKitSampleIdentifier == payload.healthKitSampleIdentifier }) {
+                if payload.updatedAt >= match.updatedAt {
+                    match.foodName = payload.foodName
+                    match.amountDescription = payload.amountDescription
+                    match.calories = payload.calories
+                    match.consumedAt = payload.consumedAt
+                    match.updatedAt = payload.updatedAt
+                    match.healthKitSampleIdentifier = payload.healthKitSampleIdentifier
+                    match.source = payload.source
+                }
+            } else {
+                modelContext.insert(
+                    FoodEntry(
+                        id: payload.id,
+                        foodName: payload.foodName,
+                        amountDescription: payload.amountDescription,
+                        calories: payload.calories,
+                        consumedAt: payload.consumedAt,
+                        updatedAt: payload.updatedAt,
+                        source: payload.source,
+                        healthKitSampleIdentifier: payload.healthKitSampleIdentifier
+                    )
+                )
+            }
+        }
+    }
+
+    private func updateReminderSchedule(enabled: Bool) async {
+        do {
+            if enabled {
+                try await reminderManager.enableDefaultReminder()
+            } else {
+                await reminderManager.disableReminder()
+            }
+        } catch {
+            syncCoordinator.syncMessage = "Reminder setup failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct HomeDashboardView: View {
+    let entries: [FoodEntry]
+    let profile: UserProfile
+    let syncMessage: String
+    let hasCompletedQuickStart: Bool
+    let onOpenQuickStart: () -> Void
+
     private var selectedTargetMode: TargetMode {
-        activeProfile.selectedTargetMode
+        profile.selectedTargetMode
     }
 
     private var todayCalories: Double {
@@ -153,14 +275,14 @@ struct ContentView: View {
     }
 
     private var dailyTarget: Double {
-        selectedTargetMode == .dynamic ? activeProfile.estimatedTDEE() : activeProfile.dailyCalorieTarget
+        selectedTargetMode == .dynamic ? profile.recommendedDailyTarget() : profile.dailyCalorieTarget
     }
 
     private var weeklyTarget: Double {
         if selectedTargetMode == .dynamic {
-            return activeProfile.estimatedTDEE() * 7
+            return profile.recommendedWeeklyTarget()
         }
-        return activeProfile.weeklyCalorieTarget
+        return profile.weeklyCalorieTarget
     }
 
     private var weekLoggedDays: Int {
@@ -169,6 +291,47 @@ struct ContentView: View {
 
     private var currentStreakDays: Int {
         StreakCalculator.currentDailyLoggingStreak(entries: entries)
+    }
+
+    var body: some View {
+        List {
+            if !hasCompletedQuickStart {
+                Section("Quick Start") {
+                    Text("Finish the 3-step privacy setup when you are ready.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Open Quick Start") {
+                        onOpenQuickStart()
+                    }
+                }
+            }
+
+            Section("Today") {
+                dailyCard
+            }
+
+            Section("Week") {
+                weeklyCard
+            }
+
+            Section("Consistency") {
+                consistencyCard
+            }
+
+            Section("Targets") {
+                targetModePicker
+                metabolismCard
+            }
+
+            if !syncMessage.isEmpty {
+                Section("Sync") {
+                    Text(syncMessage)
+                        .font(.footnote)
+                }
+            }
+
+        }
+        .navigationTitle("My Calories")
     }
 
     private var dailyCard: some View {
@@ -218,7 +381,13 @@ struct ContentView: View {
     }
 
     private var targetModePicker: some View {
-        Picker("Target Mode", selection: Binding(get: { selectedTargetMode }, set: { activeProfile.selectedTargetMode = $0 })) {
+        Picker(
+            "Target Mode",
+            selection: Binding(
+                get: { profile.selectedTargetMode },
+                set: { profile.selectedTargetMode = $0 }
+            )
+        ) {
             ForEach(TargetMode.allCases) { mode in
                 Text(mode.title).tag(mode)
             }
@@ -228,9 +397,9 @@ struct ContentView: View {
 
     private var metabolismCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Estimated BMR: \(Int(activeProfile.estimatedBMR())) cal/day")
-            Text("Estimated TDEE: \(Int(activeProfile.estimatedTDEE())) cal/day")
-            Text("Dynamic mode uses TDEE to drive daily and weekly targets.")
+            Text("Estimated BMR: \(Int(profile.estimatedBMR())) cal/day")
+            Text("Estimated TDEE: \(Int(profile.estimatedTDEE())) cal/day")
+            Text("Dynamic mode uses your goal and activity level to drive daily and weekly targets.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -257,138 +426,74 @@ struct ContentView: View {
             return .red
         }
     }
+}
 
-    private func addEntry(_ payload: AddFoodEntryPayload) {
-        withAnimation {
-            let entry = FoodEntry(
-                foodName: payload.foodName,
-                amountDescription: payload.amountDescription,
-                calories: payload.calories,
-                consumedAt: payload.consumedAt,
-                updatedAt: .now,
-                source: "manual"
-            )
-            modelContext.insert(entry)
-        }
+private struct LogEntriesView: View {
+    let entries: [FoodEntry]
+    let onAddEntry: () -> Void
+    let onDeleteEntries: (IndexSet) -> Void
 
-        Task {
-            await syncAllEntriesWithHealthKit()
-        }
+    private var todayEntries: [FoodEntry] {
+        entries.filter { Calendar.current.isDateInToday($0.consumedAt) }
     }
 
-    private func deleteEntries(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(entries[index])
-            }
-        }
-
-        Task {
-            await syncAllEntriesWithHealthKit()
-        }
-    }
-
-    private func bootstrapIfNeeded() {
-        if profiles.isEmpty {
-            modelContext.insert(UserProfile())
-        }
-
-        if foodCatalog.isEmpty {
-            FoodCatalogSeed.defaults.forEach {
-                modelContext.insert(
-                    FoodCatalogItem(
-                        name: $0.name,
-                        defaultAmountDescription: $0.amount,
-                        caloriesPerDefaultAmount: $0.calories
-                    )
-                )
-            }
-        }
-
-        Task {
-            await updateReminderSchedule(enabled: enableReminders)
-        }
-    }
-
-    private func refreshFromHealthKit() async {
-        guard hasCompletedQuickStart else { return }
-        let startDate = Calendar.gregorianSundayStart.date(byAdding: .day, value: -14, to: .now) ?? .now
-        let payloads = await syncCoordinator.pullLatestEntries(from: startDate, to: .now)
-
-        guard !payloads.isEmpty else { return }
-
-        for payload in payloads {
-            if let match = entries.first(where: { $0.healthKitSampleIdentifier == payload.healthKitSampleIdentifier }) {
-                if payload.updatedAt > match.updatedAt {
-                    match.foodName = payload.foodName
-                    match.amountDescription = payload.amountDescription
-                    match.calories = payload.calories
-                    match.consumedAt = payload.consumedAt
-                    match.updatedAt = payload.updatedAt
-                    match.source = "healthKit"
+    var body: some View {
+        List {
+            Section("Today") {
+                if todayEntries.isEmpty {
+                    Text("No entries yet today. Tap + to add your first meal.")
+                        .foregroundStyle(.secondary)
                 }
-            } else {
-                modelContext.insert(
-                    FoodEntry(
-                        id: payload.id,
-                        foodName: payload.foodName,
-                        amountDescription: payload.amountDescription,
-                        calories: payload.calories,
-                        consumedAt: payload.consumedAt,
-                        updatedAt: payload.updatedAt,
-                        source: "healthKit",
-                        healthKitSampleIdentifier: payload.healthKitSampleIdentifier
-                    )
-                )
-            }
-        }
-    }
 
-    private func syncAllEntriesWithHealthKit() async {
-        guard hasCompletedQuickStart else { return }
-        let snapshots = entries.map(CalorieEntryPayload.init)
-        let mergedPayloads = await syncCoordinator.sync(localEntries: snapshots)
-
-        for payload in mergedPayloads {
-            if let match = entries.first(where: { $0.id == payload.id || $0.healthKitSampleIdentifier == payload.healthKitSampleIdentifier }) {
-                if payload.updatedAt > match.updatedAt || payload.updatedAt == match.updatedAt {
-                    match.foodName = payload.foodName
-                    match.amountDescription = payload.amountDescription
-                    match.calories = payload.calories
-                    match.consumedAt = payload.consumedAt
-                    match.updatedAt = payload.updatedAt
-                    match.healthKitSampleIdentifier = payload.healthKitSampleIdentifier
-                    match.source = payload.source
+                ForEach(todayEntries) { entry in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(entry.foodName)
+                            Text(entry.amountDescription)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing) {
+                            Text("\(Int(entry.calories)) cal")
+                            Text(entry.consumedAt, format: .dateTime.hour().minute())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-            } else {
-                modelContext.insert(
-                    FoodEntry(
-                        id: payload.id,
-                        foodName: payload.foodName,
-                        amountDescription: payload.amountDescription,
-                        calories: payload.calories,
-                        consumedAt: payload.consumedAt,
-                        updatedAt: payload.updatedAt,
-                        source: payload.source,
-                        healthKitSampleIdentifier: payload.healthKitSampleIdentifier
-                    )
-                )
+                .onDelete(perform: deleteFromTodayList)
+            }
+
+            Section("History") {
+#if os(iOS)
+                Link("View previous days in Health", destination: URL(string: "x-apple-health://")!)
+#else
+                Text("Previous days are available in the Health app on iPhone.")
+                    .foregroundStyle(.secondary)
+#endif
+            }
+        }
+        .navigationTitle("Log")
+        .toolbar {
+#if os(iOS)
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+#endif
+            ToolbarItem {
+                Button(action: onAddEntry) {
+                    Label("Add Entry", systemImage: "plus")
+                }
             }
         }
     }
 
-    private func updateReminderSchedule(enabled: Bool) async {
-        do {
-            if enabled {
-                try await reminderManager.enableDefaultReminder()
-            } else {
-                await reminderManager.disableReminder()
-            }
-        } catch {
-            syncCoordinator.syncMessage = "Reminder setup failed: \(error.localizedDescription)"
-        }
+    private func deleteFromTodayList(offsets: IndexSet) {
+        let idsToDelete = offsets.map { todayEntries[$0].id }
+        let mappedOffsets = IndexSet(entries.enumerated().compactMap { idsToDelete.contains($0.element.id) ? $0.offset : nil })
+        onDeleteEntries(mappedOffsets)
     }
-
 }
 
 fileprivate struct NavigationViewWrapper<Content: View>: View {
@@ -402,7 +507,9 @@ fileprivate struct NavigationViewWrapper<Content: View>: View {
             Text("Select an item")
         }
 #else
-        content()
+        NavigationStack {
+            content()
+        }
 #endif
     }
 }
@@ -641,6 +748,14 @@ private final class HealthKitSyncCoordinator: ObservableObject {
         }
     }
 
+    func deleteEntriesFromHealthKit(_ entries: [CalorieEntryPayload]) async {
+        do {
+            try await healthKitService.deleteEntries(entries)
+        } catch {
+            syncMessage = "HealthKit delete failed: \(error.localizedDescription)"
+        }
+    }
+
     // Sync rule: fetch latest HealthKit data first, then merge, then push if needed.
     func sync(localEntries: [CalorieEntryPayload]) async -> [CalorieEntryPayload] {
         do {
@@ -731,7 +846,7 @@ private final class HealthKitService {
         return samples.map { sample in
             let metadata = sample.metadata ?? [:]
             let idString = metadata["localEntryID"] as? String
-            let entryID = UUID(uuidString: idString ?? "") ?? UUID()
+            let entryID = UUID(uuidString: idString ?? "") ?? sample.uuid
             let foodName = metadata["foodName"] as? String ?? "Health Entry"
             let amount = metadata["amount"] as? String ?? "Imported"
             let updatedAt = metadata["updatedAt"] as? Date ?? sample.endDate
@@ -759,15 +874,49 @@ private final class HealthKitService {
         let endDate = Date.now
 
         // Always pull from HealthKit before attempting to write.
-        let remoteEntries = try await fetchEntries(from: startDate, to: endDate)
-        let merged = merge(localEntries: localEntries, remoteEntries: remoteEntries)
-        let pushCandidates = entriesNeedingPush(localEntries: localEntries, remoteEntries: remoteEntries)
+        let remoteEntriesBeforePush = try await fetchEntries(from: startDate, to: endDate)
+        let pushCandidates = entriesNeedingPush(localEntries: localEntries, remoteEntries: remoteEntriesBeforePush)
         if !pushCandidates.isEmpty {
             try await saveToHealthKit(pushCandidates)
         }
-        return merged
+        let remoteEntriesAfterPush = try await fetchEntries(from: startDate, to: endDate)
+        return merge(localEntries: localEntries, remoteEntries: remoteEntriesAfterPush)
 #else
         return localEntries
+#endif
+    }
+
+    func deleteEntries(_ entries: [CalorieEntryPayload]) async throws {
+#if canImport(HealthKit)
+        let uuids = entries
+            .compactMap(\.healthKitSampleIdentifier)
+            .compactMap(UUID.init(uuidString:))
+
+        let localEntryIDPredicates = entries.map {
+            HKQuery.predicateForObjects(withMetadataKey: "localEntryID", operatorType: .equalTo, value: $0.id.uuidString)
+        }
+
+        var subpredicates: [NSPredicate] = localEntryIDPredicates
+        if !uuids.isEmpty {
+            subpredicates.append(HKQuery.predicateForObjects(with: Set(uuids)))
+        }
+
+        guard !subpredicates.isEmpty else { return }
+        let predicate = NSCompoundPredicate(orPredicateWithSubpredicates: subpredicates)
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            store.deleteObjects(of: dietaryType, predicate: predicate) { success, _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: ServiceError.authorizationUnavailable)
+                }
+            }
+        }
+#else
+        throw ServiceError.unsupported
 #endif
     }
 
@@ -789,6 +938,9 @@ private final class HealthKitService {
     }
 
     private func saveToHealthKit(_ entries: [CalorieEntryPayload]) async throws {
+        // Replace older samples for the same local entry ID to avoid duplicates on re-sync or edits.
+        try await deleteEntries(entries)
+
         let samples = entries.map { entry in
             HKQuantitySample(
                 type: dietaryType,
@@ -821,8 +973,13 @@ private final class HealthKitService {
     private func merge(localEntries: [CalorieEntryPayload], remoteEntries: [CalorieEntryPayload]) -> [CalorieEntryPayload] {
         var mergedByKey: [String: CalorieEntryPayload] = [:]
 
-        remoteEntries.forEach {
-            mergedByKey[mergeKey(for: $0)] = $0
+        remoteEntries.forEach { remote in
+            let key = mergeKey(for: remote)
+            if let existing = mergedByKey[key] {
+                mergedByKey[key] = remote.updatedAt >= existing.updatedAt ? remote : existing
+            } else {
+                mergedByKey[key] = remote
+            }
         }
 
         for local in localEntries {
@@ -844,7 +1001,16 @@ private final class HealthKitService {
     }
 
     private func entriesNeedingPush(localEntries: [CalorieEntryPayload], remoteEntries: [CalorieEntryPayload]) -> [CalorieEntryPayload] {
-        let remoteByKey = Dictionary(uniqueKeysWithValues: remoteEntries.map { (mergeKey(for: $0), $0) })
+        var remoteByKey: [String: CalorieEntryPayload] = [:]
+        remoteEntries.forEach { remote in
+            let key = mergeKey(for: remote)
+            if let existing = remoteByKey[key] {
+                remoteByKey[key] = remote.updatedAt >= existing.updatedAt ? remote : existing
+            } else {
+                remoteByKey[key] = remote
+            }
+        }
+
         return localEntries.filter { local in
             let key = mergeKey(for: local)
             guard let remote = remoteByKey[key] else {
@@ -855,14 +1021,6 @@ private final class HealthKitService {
     }
 
     private func mergeKey(for payload: CalorieEntryPayload) -> String {
-        if let healthKitSampleIdentifier = payload.healthKitSampleIdentifier {
-            return "hk-\(healthKitSampleIdentifier)"
-        }
-        return [
-            payload.foodName.lowercased(),
-            payload.amountDescription.lowercased(),
-            String(Int(payload.calories.rounded())),
-            String(Int(payload.consumedAt.timeIntervalSince1970 / 60))
-        ].joined(separator: "|")
+        return "entry-\(payload.id.uuidString)"
     }
 }

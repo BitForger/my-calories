@@ -37,6 +37,47 @@ enum WeeklyAggregateStatus: String {
     case belowTarget
 }
 
+enum NutritionGoal: String, CaseIterable, Identifiable {
+    case maintain
+    case loseWeight
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .maintain: return "Maintain Weight"
+        case .loseWeight: return "Lose Weight"
+        }
+    }
+}
+
+enum WeightLossPace: String, CaseIterable, Identifiable {
+    case halfPoundPerWeek
+    case onePoundPerWeek
+    case oneAndHalfPoundsPerWeek
+    case twoPoundsPerWeek
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .halfPoundPerWeek: return "Light (0.5 lb/week)"
+        case .onePoundPerWeek: return "Moderate (1.0 lb/week)"
+        case .oneAndHalfPoundsPerWeek: return "Strong (1.5 lb/week)"
+        case .twoPoundsPerWeek: return "Aggressive (2.0 lb/week)"
+        }
+    }
+
+    var dailyCalorieDeficit: Double {
+        switch self {
+        case .halfPoundPerWeek: return 250
+        case .onePoundPerWeek: return 500
+        case .oneAndHalfPoundsPerWeek: return 750
+        case .twoPoundsPerWeek: return 1000
+        }
+    }
+}
+
 @Model
 final class FoodEntry {
     @Attribute(.unique) var id: UUID
@@ -100,6 +141,8 @@ final class UserProfile {
     var dailyCalorieTarget: Double
     var weeklyCalorieTarget: Double
     var selectedTargetModeRawValue: String
+    var nutritionGoalRawValue: String
+    var weightLossPaceRawValue: String
 
     init(
         id: UUID = UUID(),
@@ -108,9 +151,11 @@ final class UserProfile {
         heightCm: Double = 175,
         weightKg: Double = 75,
         activityMultiplier: Double = 1.375,
-        dailyCalorieTarget: Double = 2200,
-        weeklyCalorieTarget: Double = 15400,
-        selectedTargetModeRawValue: String = TargetMode.weekly.rawValue
+        dailyCalorieTarget: Double? = nil,
+        weeklyCalorieTarget: Double? = nil,
+        selectedTargetModeRawValue: String = TargetMode.weekly.rawValue,
+        nutritionGoalRawValue: String = NutritionGoal.maintain.rawValue,
+        weightLossPaceRawValue: String = WeightLossPace.onePoundPerWeek.rawValue
     ) {
         self.id = id
         self.age = age
@@ -118,9 +163,15 @@ final class UserProfile {
         self.heightCm = heightCm
         self.weightKg = weightKg
         self.activityMultiplier = activityMultiplier
-        self.dailyCalorieTarget = dailyCalorieTarget
-        self.weeklyCalorieTarget = weeklyCalorieTarget
+        self.dailyCalorieTarget = 0
+        self.weeklyCalorieTarget = 0
         self.selectedTargetModeRawValue = selectedTargetModeRawValue
+        self.nutritionGoalRawValue = nutritionGoalRawValue
+        self.weightLossPaceRawValue = weightLossPaceRawValue
+
+        let defaultDailyTarget = estimatedTDEE()
+        self.dailyCalorieTarget = dailyCalorieTarget ?? defaultDailyTarget
+        self.weeklyCalorieTarget = weeklyCalorieTarget ?? (defaultDailyTarget * 7)
     }
 
     var selectedTargetMode: TargetMode {
@@ -133,6 +184,16 @@ final class UserProfile {
         set { sexRawValue = newValue.rawValue }
     }
 
+    var nutritionGoal: NutritionGoal {
+        get { NutritionGoal(rawValue: nutritionGoalRawValue) ?? .maintain }
+        set { nutritionGoalRawValue = newValue.rawValue }
+    }
+
+    var weightLossPace: WeightLossPace {
+        get { WeightLossPace(rawValue: weightLossPaceRawValue) ?? .onePoundPerWeek }
+        set { weightLossPaceRawValue = newValue.rawValue }
+    }
+
     func estimatedBMR() -> Double {
         let base = 10 * weightKg + 6.25 * heightCm - 5 * Double(age)
         return biologicalSex == .male ? base + 5 : base - 161
@@ -140,6 +201,16 @@ final class UserProfile {
 
     func estimatedTDEE() -> Double {
         estimatedBMR() * activityMultiplier
+    }
+
+    func recommendedDailyTarget() -> Double {
+        let base = estimatedTDEE()
+        guard nutritionGoal == .loseWeight else { return base }
+        return max(1200, base - weightLossPace.dailyCalorieDeficit)
+    }
+
+    func recommendedWeeklyTarget() -> Double {
+        recommendedDailyTarget() * 7
     }
 }
 

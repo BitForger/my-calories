@@ -16,12 +16,33 @@ struct my_caloriesApp: App {
             FoodCatalogItem.self,
             UserProfile.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+
+        let persistentConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(for: schema, configurations: [persistentConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            // Recovery path for incompatible/corrupted stores after schema changes.
+            let appSupport = URL.applicationSupportDirectory
+            let candidateStoreFiles = [
+                appSupport.appending(path: "default.store"),
+                appSupport.appending(path: "default.store-shm"),
+                appSupport.appending(path: "default.store-wal")
+            ]
+            for fileURL in candidateStoreFiles {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+
+            do {
+                return try ModelContainer(for: schema, configurations: [persistentConfiguration])
+            } catch {
+                let inMemoryConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+                do {
+                    return try ModelContainer(for: schema, configurations: [inMemoryConfiguration])
+                } catch {
+                    preconditionFailure("Could not create ModelContainer after recovery attempts: \(error)")
+                }
+            }
         }
     }()
 
