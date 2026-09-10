@@ -19,21 +19,13 @@
     {
       "layers" : [
         {
-          "image-name" : "circle.dashed.svg",
-          "name" : "circle.dashed",
+          "blend-mode" : "overlay",
+          "fill" : "none",
+          "glass" : false,
+          "image-name" : "fork.knife.circle.svg",
+          "name" : "fork.knife.circle",
           "position" : {
             "scale" : 6,
-            "translation-in-points" : [
-              0,
-              0
-            ]
-          }
-        },
-        {
-          "image-name" : "fork.knife.circle.fill.svg",
-          "name" : "fork.knife.circle.fill",
-          "position" : {
-            "scale" : 3,
             "translation-in-points" : [
               0,
               0
