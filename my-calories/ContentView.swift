@@ -119,7 +119,7 @@ struct ContentView: View {
         await syncAllEntriesWithHealthKit()
     }
 
-    private func addEntry(_ payload: AddFoodEntryPayload) {
+    @MainActor private func addEntry(_ payload: AddFoodEntryPayload) {
         let entry = FoodEntry(
             foodName: payload.foodName,
             amountDescription: payload.amountDescription,
@@ -1044,3 +1044,4 @@ private final class HealthKitService {
         return "entry-\(payload.id.uuidString)"
     }
 }
+
