@@ -18,6 +18,9 @@ struct SettingsView: View {
     @State private var isAgeExpanded = false
     @State private var isHeightExpanded = false
     @State private var isWeightExpanded = false
+    @State private var dailyTargetInput: String = ""
+    @State private var weeklyTargetInput: String = ""
+    @FocusState private var focusedTargetField: TargetField?
 
     private struct ActivityLevel: Identifiable {
         let id: String
@@ -48,6 +51,20 @@ struct SettingsView: View {
         )
     }
 
+    private var dailyTargetTextBinding: Binding<String> {
+        Binding(
+            get: { dailyTargetInput },
+            set: { dailyTargetInput = sanitizeTargetInput($0) }
+        )
+    }
+
+    private var weeklyTargetTextBinding: Binding<String> {
+        Binding(
+            get: { weeklyTargetInput },
+            set: { weeklyTargetInput = sanitizeTargetInput($0) }
+        )
+    }
+
     var body: some View {
         Form {
             Section("Privacy & Sync") {
@@ -58,13 +75,15 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Quick Start") {
-                Label(
-                    hasCompletedQuickStart ? "Completed" : "Not completed",
-                    systemImage: hasCompletedQuickStart ? "checkmark.circle.fill" : "exclamationmark.circle"
-                )
-                Button("Open Quick Start") {
-                    onOpenQuickStart()
+            if !hasCompletedQuickStart {
+                Section("Quick Start") {
+                    Label(
+                        hasCompletedQuickStart ? "Completed" : "Not completed",
+                        systemImage: hasCompletedQuickStart ? "checkmark.circle.fill" : "exclamationmark.circle"
+                    )
+                    Button("Open Quick Start") {
+                        onOpenQuickStart()
+                    }
                 }
             }
 
@@ -172,7 +191,11 @@ struct SettingsView: View {
                     }
                 }
             }
-
+            Section("Metabolism") {
+                Text("Estimated BMR: \(Int(profile.estimatedBMR())) cal/day")
+                Text("Estimated TDEE: \(Int(profile.estimatedTDEE())) cal/day")
+                    .foregroundStyle(.secondary)
+            }
             Section("Targets") {
                 Picker(
                     "Goal",
@@ -213,38 +236,75 @@ struct SettingsView: View {
                 Button("Use Recommended Targets") {
                     profile.dailyCalorieTarget = profile.recommendedDailyTarget()
                     profile.weeklyCalorieTarget = profile.recommendedWeeklyTarget()
+                    dailyTargetInput = formattedCalories(profile.dailyCalorieTarget)
+                    weeklyTargetInput = formattedCalories(profile.weeklyCalorieTarget)
                 }
 
-                Stepper(
-                    "Daily target: \(Int(profile.dailyCalorieTarget)) cal",
-                    value: Binding(
-                        get: { profile.dailyCalorieTarget },
-                        set: { profile.dailyCalorieTarget = min(max($0, 800), 6000) }
-                    ),
-                    in: 800...6000,
-                    step: 50
-                )
+                LabeledContent("Daily target") {
+                    HStack(spacing: 8) {
+                        TextField("2,000", text: dailyTargetTextBinding)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .focused($focusedTargetField, equals: .daily)
+                            .frame(width: 100)
+                        Text("cal")
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
-                Stepper(
-                    "Weekly target: \(Int(profile.weeklyCalorieTarget)) cal",
-                    value: Binding(
-                        get: { profile.weeklyCalorieTarget },
-                        set: { profile.weeklyCalorieTarget = min(max($0, 5600), 42000) }
-                    ),
-                    in: 5600...42000,
-                    step: 100
-                )
+                LabeledContent("Weekly target") {
+                    HStack(spacing: 8) {
+                        TextField("14,000", text: weeklyTargetTextBinding)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .focused($focusedTargetField, equals: .weekly)
+                            .frame(width: 100)
+                        Text("cal")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
-            Section("Metabolism") {
-                Text("Estimated BMR: \(Int(profile.estimatedBMR())) cal/day")
-                Text("Estimated TDEE: \(Int(profile.estimatedTDEE())) cal/day")
-                    .foregroundStyle(.secondary)
-            }
+            
         }
         .animation(.easeInOut(duration: 0.2), value: isAgeExpanded)
         .animation(.easeInOut(duration: 0.2), value: isHeightExpanded)
         .animation(.easeInOut(duration: 0.2), value: isWeightExpanded)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if focusedTargetField != nil {
+                    Button("Done") {
+                        commitTargetFieldEdits()
+                        focusedTargetField = nil
+                    }
+                }
+            }
+        }
+        .onAppear {
+            dailyTargetInput = formattedCalories(profile.dailyCalorieTarget)
+            weeklyTargetInput = formattedCalories(profile.weeklyCalorieTarget)
+        }
+        .onChange(of: focusedTargetField) { oldValue, newValue in
+            if oldValue != nil && newValue == nil {
+                commitTargetFieldEdits()
+            }
+            if newValue == .daily {
+                dailyTargetInput = sanitizeTargetInput(dailyTargetInput)
+            }
+            if newValue == .weekly {
+                weeklyTargetInput = sanitizeTargetInput(weeklyTargetInput)
+            }
+        }
+        .onChange(of: profile.dailyCalorieTarget) { _, newValue in
+            if focusedTargetField != .daily {
+                dailyTargetInput = formattedCalories(newValue)
+            }
+        }
+        .onChange(of: profile.weeklyCalorieTarget) { _, newValue in
+            if focusedTargetField != .weekly {
+                weeklyTargetInput = formattedCalories(newValue)
+            }
+        }
         .navigationTitle("Settings")
     }
 
@@ -252,6 +312,11 @@ struct SettingsView: View {
         case age
         case height
         case weight
+    }
+
+    private enum TargetField {
+        case daily
+        case weekly
     }
 
     private func toggleExpandedPicker(_ field: ExpandedPickerField) {
@@ -278,4 +343,41 @@ struct SettingsView: View {
             }
         }
     }
+
+    private func commitTargetFieldEdits() {
+        let dailyDigits = sanitizeTargetInput(dailyTargetInput)
+        if let daily = Int(dailyDigits) {
+            let clampedDaily = min(max(Double(daily), 800), 6000)
+            profile.dailyCalorieTarget = clampedDaily
+            dailyTargetInput = formattedCalories(clampedDaily)
+        } else {
+            dailyTargetInput = formattedCalories(profile.dailyCalorieTarget)
+        }
+
+        let weeklyDigits = sanitizeTargetInput(weeklyTargetInput)
+        if let weekly = Int(weeklyDigits) {
+            let clampedWeekly = min(max(Double(weekly), 5600), 42000)
+            profile.weeklyCalorieTarget = clampedWeekly
+            weeklyTargetInput = formattedCalories(clampedWeekly)
+        } else {
+            weeklyTargetInput = formattedCalories(profile.weeklyCalorieTarget)
+        }
+    }
+
+    private func sanitizeTargetInput(_ input: String) -> String {
+        input.filter(\.isNumber)
+    }
+
+    private func formattedCalories(_ value: Double) -> String {
+        Self.calorieNumberFormatter.string(from: NSNumber(value: Int(value.rounded()))) ?? "\(Int(value.rounded()))"
+    }
+
+    private static let calorieNumberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = Locale.current.groupingSeparator
+        formatter.usesGroupingSeparator = true
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
 }

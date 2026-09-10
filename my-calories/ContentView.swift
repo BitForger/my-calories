@@ -120,20 +120,25 @@ struct ContentView: View {
     }
 
     private func addEntry(_ payload: AddFoodEntryPayload) {
+        let entry = FoodEntry(
+            foodName: payload.foodName,
+            amountDescription: payload.amountDescription,
+            calories: payload.calories,
+            consumedAt: payload.consumedAt,
+            updatedAt: .now,
+            source: "manual"
+        )
+
         withAnimation {
-            let entry = FoodEntry(
-                foodName: payload.foodName,
-                amountDescription: payload.amountDescription,
-                calories: payload.calories,
-                consumedAt: payload.consumedAt,
-                updatedAt: .now,
-                source: "manual"
-            )
             modelContext.insert(entry)
         }
 
+        // Build a sync snapshot that explicitly includes the new entry.
+        // This avoids a race where @Query `entries` has not refreshed yet.
+        let localSnapshots = deduplicatedSnapshots(entries.map(CalorieEntryPayload.init) + [CalorieEntryPayload(entry)])
+
         Task {
-            await syncAllEntriesWithHealthKit()
+            await syncEntriesWithHealthKit(localSnapshots)
         }
     }
 
@@ -211,7 +216,10 @@ struct ContentView: View {
     }
 
     private func syncAllEntriesWithHealthKit() async {
-        let snapshots = entries.map(CalorieEntryPayload.init)
+        await syncEntriesWithHealthKit(entries.map(CalorieEntryPayload.init))
+    }
+
+    private func syncEntriesWithHealthKit(_ snapshots: [CalorieEntryPayload]) async {
         let mergedPayloads = await syncCoordinator.sync(localEntries: snapshots)
 
         for payload in mergedPayloads {
@@ -240,6 +248,18 @@ struct ContentView: View {
                 )
             }
         }
+    }
+
+    private func deduplicatedSnapshots(_ snapshots: [CalorieEntryPayload]) -> [CalorieEntryPayload] {
+        var byID: [UUID: CalorieEntryPayload] = [:]
+        for snapshot in snapshots {
+            if let existing = byID[snapshot.id] {
+                byID[snapshot.id] = snapshot.updatedAt >= existing.updatedAt ? snapshot : existing
+            } else {
+                byID[snapshot.id] = snapshot
+            }
+        }
+        return Array(byID.values)
     }
 
     private func updateReminderSchedule(enabled: Bool) async {
