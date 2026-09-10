@@ -159,7 +159,7 @@
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "my-calories/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Simply Track - Calorie Counter";
+				INFOPLIST_KEY_CFBundleDisplayName = "Simply Track";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "We read calorie intake from Health to keep your dashboard and weekly targets accurate.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We write calorie entries to Health so your nutrition data stays in sync across apps.";
@@ -222,7 +222,7 @@
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "my-calories/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Simply Track - Calorie Counter";
+				INFOPLIST_KEY_CFBundleDisplayName = "Simply Track";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "We read calorie intake from Health to keep your dashboard and weekly targets accurate.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "We write calorie entries to Health so your nutrition data stays in sync across apps.";
