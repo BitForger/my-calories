@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  my-calories
+//  simply-track
 //
 //  Created by Noah on 8/27/26.
 //
@@ -133,8 +133,6 @@ struct ContentView: View {
             modelContext.insert(entry)
         }
 
-        // Build a sync snapshot that explicitly includes the new entry.
-        // This avoids a race where @Query `entries` has not refreshed yet.
         let localSnapshots = deduplicatedSnapshots(entries.map(CalorieEntryPayload.init) + [CalorieEntryPayload(entry)])
 
         Task {
@@ -351,7 +349,7 @@ private struct HomeDashboardView: View {
             }
 
         }
-        .navigationTitle("My Calories")
+        .navigationTitle("Simply Track")
     }
 
     private var dailyCard: some View {
@@ -776,7 +774,6 @@ private final class HealthKitSyncCoordinator: ObservableObject {
         }
     }
 
-    // Sync rule: fetch latest HealthKit data first, then merge, then push if needed.
     func sync(localEntries: [CalorieEntryPayload]) async -> [CalorieEntryPayload] {
         do {
             let merged = try await healthKitService.syncReadFirst(localEntries: localEntries)
@@ -893,7 +890,6 @@ private final class HealthKitService {
         let startDate = localEntries.map(\.consumedAt).min() ?? Calendar.current.date(byAdding: .day, value: -14, to: .now) ?? .now
         let endDate = Date.now
 
-        // Always pull from HealthKit before attempting to write.
         let remoteEntriesBeforePush = try await fetchEntries(from: startDate, to: endDate)
         let pushCandidates = entriesNeedingPush(localEntries: localEntries, remoteEntries: remoteEntriesBeforePush)
         if !pushCandidates.isEmpty {
@@ -958,7 +954,6 @@ private final class HealthKitService {
     }
 
     private func saveToHealthKit(_ entries: [CalorieEntryPayload]) async throws {
-        // Replace older samples for the same local entry ID to avoid duplicates on re-sync or edits.
         try await deleteEntries(entries)
 
         let samples = entries.map { entry in
@@ -1012,7 +1007,6 @@ private final class HealthKitService {
             if local.updatedAt > remote.updatedAt {
                 mergedByKey[key] = local
             } else if local.updatedAt == remote.updatedAt {
-                // Fallback policy: if timestamps tie, HealthKit remains source of truth.
                 mergedByKey[key] = remote
             }
         }
@@ -1044,4 +1038,3 @@ private final class HealthKitService {
         return "entry-\(payload.id.uuidString)"
     }
 }
-

@@ -1,6 +1,6 @@
 //
-//  my_caloriesApp.swift
-//  my-calories
+//  simply_trackApp.swift
+//  simply-track
 //
 //  Created by Noah on 8/27/26.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import SwiftData
 
 @main
-struct my_caloriesApp: App {
+struct simply_trackApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             FoodEntry.self,

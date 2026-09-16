@@ -1,6 +1,6 @@
 //
 //  Item.swift
-//  my-calories
+//  simply-track
 //
 //  Created by Noah on 8/27/26.
 //
